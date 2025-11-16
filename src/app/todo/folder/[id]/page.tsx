@@ -1,42 +1,46 @@
 // src/app/todo/folder/[id]/page.tsx
-
 /**
- * FolderPage (動的ルート /todo/folder/[id])
+ * FolderPage
+ * -------------------------------------------------------------
+ * 役割:
+ *  - URL `/todo/folder/[id]` ごとのフォルダページを表示する Server Component。
+ *  - 上部にフォルダ名 / 説明を表示し、下部にそのフォルダに属する TODO 一覧を表示する。
  *
- * このファイルの役割
- * - URL パラメータのフォルダ ID（エンコード済み）を受け取り、
- *   そのフォルダに紐づく TODO 一覧を表示するページ。
- * - サーバーコンポーネントとしてフォルダのメタデータ（名前・説明）を Firestore から取得し、
- *   クライアントコンポーネント FolderTasks に実際の TODO の描画を任せる。
+ * 設計方針:
+ *  - URL パラメータの id は `encodeURIComponent(folderName)` されたものを受け取り、
+ *    ここで `decodeURIComponent` して「実際のフォルダ名」として扱う。
+ *  - フォルダのメタデータ（正式名称や説明文）が `folders` コレクションにあればそれを表示、
+ *    なければ「フォルダ名 = decodedId」の簡易表示にフォールバックする。
+ *  - TODO 一覧の表示は Client Component `FolderTasks` に責務を分離する。
  *
- * 設計方針
- * - params は Next.js App Router 標準の `{ params: { id: string } }` で受け取る。
- *   Promise を経由させる必要はないため、シンプルな型にリファクタ。
- * - フォルダメタデータが存在しない場合も、ページ自体はクラッシュさせず
- *   「名前だけ表示」するフォールバックとする。
- *
- * 関連コンポーネント
- * - FolderTasks（src/app/components/FolderTasks.tsx）
- *   - 実際の plans コレクションから folder ごとの TODO を購読・表示する。
+ * 関連コンポーネント:
+ *  - `src/app/components/FolderSidebar.tsx`
+ *      → 各フォルダへのリンクを表示するサイドバー。
+ *         `encodeURIComponent(name)` した文字列を `/todo/folder/:id` に渡す。
+ *  - `src/app/components/FolderTasks.tsx`
+ *      → 実際の TODO 一覧を描画する Client Component。
  */
 
 import React from "react";
-import { db } from "@/lib/firebase";
 import { doc, getDoc } from "firebase/firestore";
-import FolderTasks from "../../../components/FolderTasks";
+import { db } from "@/lib/firebase";
+import FolderTasks from "@/app/components/FolderTasks";
 
-// Next.js App Router の動的ルート用 props 型
+// ★ 今の Next.js の挙動に合わせて、params は Promise<{ id: string }> として受ける
 type FolderPageProps = {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 };
 
 export default async function FolderPage({ params }: FolderPageProps) {
-  const folderId = params?.id;
+  // ------------------------------------------------------------
+  // ① params は Promise なので、必ず await してから id を取り出す
+  //    （ここを await しないと、エラーメッセージのように怒られる）
+  // ------------------------------------------------------------
+  const resolvedParams = await params;
+  const rawId = resolvedParams.id; // 例: "%E8%AB%96%E6%96%87%E7%B4%B9%E4%BB%8B"
 
-  // 開発時のデバッグログ（本番ではログレベルを落としてもよい）
-  console.log("FolderPage called. params:", params);
-
-  if (!folderId) {
+  // 本来は常に存在する想定だが、念のため防御的にチェック
+  if (!rawId) {
     return (
       <section style={{ padding: 16 }}>
         <h1>不正なフォルダID</h1>
@@ -45,20 +49,26 @@ export default async function FolderPage({ params }: FolderPageProps) {
     );
   }
 
-  // URL エンコードされた ID を元に戻す（フォルダ名そのものを URL に使っている前提）
-  const decodedId = decodeURIComponent(folderId);
+  // ------------------------------------------------------------
+  // ② URL エンコードされた ID を実際のフォルダ名に戻す
+  // ------------------------------------------------------------
+  const decodedId = decodeURIComponent(rawId); // 例: "（未分類）" や "論文紹介"
 
-  // ---- フォルダメタデータの取得 ---------------------------------------------
-
-  // デフォルト（folders コレクションにレコードが無い場合のフォールバック）
+  // フォルダメタデータの初期値（folders コレクションが空でも動くようにする）
   let folderData: { name: string; description?: string } = {
     name: decodedId,
     description: "",
   };
 
+  // ------------------------------------------------------------
+  // ③ Firestore からフォルダのメタデータを取得（あれば上書き）
+  // ------------------------------------------------------------
   try {
-    if (!db) throw new Error("Firestore `db` is undefined on server");
+    if (!db) {
+      throw new Error("Firestore `db` is undefined on server");
+    }
 
+    // folders コレクションに「フォルダの説明」を保存しておく設計
     const folderRef = doc(db, "folders", decodedId);
     const folderSnap = await getDoc(folderRef);
 
@@ -67,41 +77,41 @@ export default async function FolderPage({ params }: FolderPageProps) {
       folderData = {
         name:
           typeof data.name === "string" && data.name.trim()
-            ? data.name
+            ? data.name.trim()
             : decodedId,
         description:
           typeof data.description === "string" ? data.description : "",
       };
     } else {
-      // folders コレクションにエントリがない場合は、plans 側の folder フィールドだけで運用しているケース。
-      // ここでは単に decodedId をフォルダ名として表示する。
-      console.warn("Folder not found for id:", decodedId);
+      // folders コレクションにエントリがない場合:
+      // - ログだけ出して、画面表示は decodedId ベースの簡易表示にフォールバック
+      console.warn("Folder not found for id in `folders` collection:", decodedId);
     }
   } catch (err) {
+    // Firestore 読み込みに失敗しても画面ごと落とさない
     console.error("FolderPage: error fetching folder metadata:", err);
-    // 失敗しても folderData はデフォルト値のままレンダリング（クラッシュを避ける）
   }
 
-  // ---- ページ描画 -----------------------------------------------------------
-
+  // ------------------------------------------------------------
+  // ④ レンダリング
+  //    上部: フォルダ名 + 説明
+  //    下部: FolderTasks (Client Component) に decodedId を渡して TODO 一覧を表示
+  // ------------------------------------------------------------
   return (
-    <section
-      style={{ maxWidth: 1000, margin: "0 auto", padding: 16 }}
-    >
-      {/* フォルダヘッダ（名前と説明） */}
+    <section style={{ maxWidth: 1000, margin: "0 auto", padding: 16 }}>
+      {/* ヘッダー: フォルダ名と説明 */}
       <header style={{ marginBottom: 16 }}>
-        <h1 style={{ margin: 0 }}>
-          {folderData.name || "（名前不明）"}
-        </h1>
+        <h1 style={{ margin: 0 }}>{folderData.name || "（名前不明）"}</h1>
         {folderData.description && (
-          <p style={{ marginTop: 4, color: "#666" }}>
-            {folderData.description}
-          </p>
+          <p style={{ marginTop: 4, color: "#666" }}>{folderData.description}</p>
         )}
       </header>
 
-      {/* TODO 一覧（クライアントコンポーネントに責務を委譲） */}
+      {/* TODO 一覧: Client Component に責務を委譲 */}
       <div id="folder-tasks-root">
+        {/* FolderTasks 側では:
+            - folderId === "（未分類）" を特別扱い
+            - それ以外は where("folder", "==", folderId) で Firestore 購読 */}
         <FolderTasks folderId={decodedId} />
       </div>
     </section>
