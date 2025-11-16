@@ -81,60 +81,60 @@ https://youtu.be/YJl_itLSu3o
 という性質を持つ設計になっています。
 
 ---
-# 技術スタック（Technology Stack）
-## フロントエンド
-### Next.js 14 (App Router)
+## 技術スタック（Technology Stack）
+### フロントエンド
+#### Next.js 14 (App Router)
 - ファイルベースルーティング
 - Server / Client Components の併用
 - API Routes（app/api/...）の利用
 
-### React 18
+#### React 18
 - Hooks ベースの設計（useState, useEffect, useRouter などを使用）
 
-### TypeScript
+#### TypeScript
 - 型安全なフォーム構造
 - コンポーネント間の型共有（addTodoTypes.ts など）
 
-### Tailwind CSS v4
+#### Tailwind CSS v4
 - カスタムテーマ（globals.css）
 - 簡易 UI 設計を高速化
 - インラインテーマ変数による配色統一
 
-## バックエンド / データベース
-### Firebase Firestore
+### バックエンド / データベース
+#### Firebase Firestore
 - plans コレクション：タスク本体
 - taskPatterns コレクション：目的＋タスク群の学習データ
 - folders コレクション：フォルダメタ情報
 - Realtime updates（onSnapshot）
 
-### Firebase SDK (Modular v9)
+#### Firebase SDK (Modular v9)
 - addDoc, updateDoc, getDoc, getDocs, query など
 - Next.js App Router でのクライアント側利用に最適化
 
-## AI / サーバーサイド
-### OpenAI API（Server Route から呼び出し）
+### AI / サーバーサイド
+#### OpenAI API（Server Route から呼び出し）
 - app/api/task-ideas/route.ts 内で利用
 - 目的テキスト → タスク案の生成
 - APIキーは Vercel Env に保存（フロントには一切出さない構成）
 
-### ローカル学習アルゴリズム（独自）
+#### ローカル学習アルゴリズム（独自）
 - Jaccard 係数風の類似度計算
 - 過去の「目的＋タスク群」を独自テンプレートとして保持
 - LLM 不要でタスク分解が可能になる設計
 
-## UI / UX
+### UI / UX
 - モーダル UI（詳細編集モーダル）
 - カレンダー UI（手作りの月次カレンダー）
 - 日次ビュー（DayView）との連動
 - フォルダ別ビュー（FolderTasks）
 
-## ビルド / デプロイ
+### ビルド / デプロイ
 - Vercel
 - 自動ビルド
 - 環境変数 (OPENAI_API_KEY, Firebase keys)
 - Next.js に最適化されたホスティング
 
-## 補助ツール
+### 補助ツール
 - ESLint / Prettier（Next.js デフォルト）
 - GitHub（コード管理）
 
