@@ -15,29 +15,32 @@ PD-Calendar は、カレンダー管理・フォルダ管理・AIタスク分解
 
 ## 画面イメージ・デモ
 
-> 画像や動画は `docs/` ディレクトリなどに配置し、パスを差し替えてください。
-
 ### トップ（今日のタスク＋フォルダ＋追加ボタン）
-![Home](./docs/home.png)
+![Home](.docs/home.png)
 
 ### カレンダー画面
-![Calendar](./docs/calendar.png)
+![Calendar](.docs/calendar.png)
 
 ### 目的＋複数タスク追加フォーム
-![Multi Task Form](./docs/multi-task.png)
+![Multi Task Form](.docs/multi_task.png)
 
 ### AIタスク提案パネル（TaskIdeasPanel）
-![AI Panel](./docs/ai-panel.png)
+![AI Panel](.docs/AI_task.png)
 
-### 動作デモ動画（任意）
+## デモ映像
 
-- 全体の流れ（例）：  
-  https://example.com/demo
+### 基本的な流れ
+https://youtu.be/xxxaAPHY6hs
 
-- AI提案 → 複数タスクフォームに流し込む様子（例）：  
-  https://example.com/demo-ai
+### 進捗状況とリスケジュール
+https://youtu.be/uiNGUaYz3Dw
 
----
+### AI提案 → 複数タスクフォームに流し込む様子：  
+https://youtu.be/-jjEljktZoE
+
+### カレンダーの使い方
+https://youtu.be/YJl_itLSu3o
+
 
 ## コアコンセプト
 
@@ -78,26 +81,62 @@ PD-Calendar は、カレンダー管理・フォルダ管理・AIタスク分解
 という性質を持つ設計になっています。
 
 ---
+# 技術スタック（Technology Stack）
+## フロントエンド
+### Next.js 14 (App Router)
+- ファイルベースルーティング
+- Server / Client Components の併用
+- API Routes（app/api/...）の利用
 
-### 3. 共通タスクスキーマによる UI 全体の一貫性
+### React 18
+- Hooks ベースの設計（useState, useEffect, useRouter などを使用）
 
-すべてのタスクは共通スキーマで Firestore 上に保存されます（例：`title`, `date`, `folder`, `estimatedMin`, `done` など）。
+### TypeScript
+- 型安全なフォーム構造
+- コンポーネント間の型共有（addTodoTypes.ts など）
 
-このスキーマを前提とすることで、以下の異なるビュー間でデータを一貫して扱えるようにしています。
+### Tailwind CSS v4
+- カスタムテーマ（globals.css）
+- 簡易 UI 設計を高速化
+- インラインテーマ変数による配色統一
 
-- 日付に紐づく「DayView」
-- 月カレンダー
-- フォルダ別タスク一覧
-- 直近タスクリスト
-- 詳細編集モーダル
-- シングルタスク追加フォーム
-- 目的＋複数タスク追加フォーム
+## バックエンド / データベース
+### Firebase Firestore
+- plans コレクション：タスク本体
+- taskPatterns コレクション：目的＋タスク群の学習データ
+- folders コレクション：フォルダメタ情報
+- Realtime updates（onSnapshot）
 
-また、フォーム内では `estimatedMin` を `number | ""` に統一し、  
-Firestore 書き込み時に `number` / `null` に正規化することで、  
-型の揺れを防ぎつつフォーム入力のしやすさも確保しています。
+### Firebase SDK (Modular v9)
+- addDoc, updateDoc, getDoc, getDocs, query など
+- Next.js App Router でのクライアント側利用に最適化
 
----
+## AI / サーバーサイド
+### OpenAI API（Server Route から呼び出し）
+- app/api/task-ideas/route.ts 内で利用
+- 目的テキスト → タスク案の生成
+- APIキーは Vercel Env に保存（フロントには一切出さない構成）
+
+### ローカル学習アルゴリズム（独自）
+- Jaccard 係数風の類似度計算
+- 過去の「目的＋タスク群」を独自テンプレートとして保持
+- LLM 不要でタスク分解が可能になる設計
+
+## UI / UX
+- モーダル UI（詳細編集モーダル）
+- カレンダー UI（手作りの月次カレンダー）
+- 日次ビュー（DayView）との連動
+- フォルダ別ビュー（FolderTasks）
+
+## ビルド / デプロイ
+- Vercel
+- 自動ビルド
+- 環境変数 (OPENAI_API_KEY, Firebase keys)
+- Next.js に最適化されたホスティング
+
+## 補助ツール
+- ESLint / Prettier（Next.js デフォルト）
+- GitHub（コード管理）
 
 ## ディレクトリ構成（抜粋）
 

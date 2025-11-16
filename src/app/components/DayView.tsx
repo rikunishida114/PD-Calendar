@@ -3,60 +3,51 @@
 
 /**
  * DayView.tsx
+ * -------------------------------------------------------------
+ * 役割:
+ *  - 指定された日付（YYYY-MM-DD）の TODO を一覧表示する日別ビュー。
+ *  - 「前日」「翌日」ボタンで日付を移動できる。
+ *  - 親（例: CalendarPage）から initialDate が変わったときも currentDate を同期する。
+ *  - 親に onDateChange(newDate) を渡しておくと、
+ *    日付をボタンで変更したタイミングでだけ親に通知する。
  *
- * このファイルの役割
- * - 指定した日付（YYYY-MM-DD）の TODO を一覧表示する「1日ビュー」コンポーネント。
- * - 「前日」「翌日」ボタンで日付を移動できるナビゲーション付き。
- * - 親（例: カレンダーページ）から initialDate を受け取って初期日付を決め、
- *   subsequent な変更も反映する（＝親主導の変更にも追従）。
- * - onDateChange を渡しておくと、前日/翌日ボタンで日付が変わったときに親へ通知できる。
- * - 各 TODO の「詳細」ボタンから TodoDetailModal を開いて編集可能。
- *
- * 設計方針
- * - このコンポーネントは「日付 × plans コレクション」の一覧表示に責務を絞る。
- *   - タスクの編集・削除などは TodoDetailModal や他コンポーネント側に任せる。
- * - Firestore 購読は currentDate に依存しており、
- *   日付が変わるたびに購読先を切り替えて、常に最新のその日のタスクを表示する。
- *
- * 関連コンポーネント / モジュール
- * - TodoDetailModal
- * - カレンダーページ（例: src/app/calender/page.tsx）
- *   - DayView の initialDate / onDateChange を用いて、日付選択を同期する。
+ * 設計方針:
+ *  - Firestore からは plans コレクションの全件を createdAt 降順で購読し、
+ *    フロント側で currentDate にマッチするものだけをフィルタ。
+ *  - 「レンダリング中には絶対に親コンポーネントの setState を呼ばない」:
+ *    → onDateChange の呼び出しは前日/翌日ボタンなどのイベントハンドラ内のみ。
  */
 
 import React, { useEffect, useState } from "react";
-import { collection, onSnapshot, orderBy, query } from "firebase/firestore";
-import { db } from "../../lib/firebase";
+import {
+  collection,
+  onSnapshot,
+  orderBy,
+  query,
+} from "firebase/firestore";
+import { db } from "@/lib/firebase";
 import TodoDetailModal from "./TodoDetailModal";
 
-// ---- 型定義 -------------------------------------------------------------------
-
-/**
- * Firestore の plans コレクションから読み取る TODO の型（必要なフィールドのみ）
- */
+/** Firestore plans コレクションから拾う最低限の型 */
 type Todo = {
   id: string;
   title: string;
-  date?: string | null;
+  date?: string | null; // "YYYY-MM-DD" 想定
   done?: boolean;
 };
 
-/**
- * DayView コンポーネントの props
- * - initialDate: 初期表示の日付（未指定なら「今日」）。
- * - onDateChange: 前日/翌日ボタンで日付が変更されたときに親へ通知するためのコールバック。
- */
 type DayViewProps = {
+  /** 親から渡される初期日付（省略時は今日を使う） */
   initialDate?: string;
+  /**
+   * 親に日付変更を伝えるコールバック。
+   * 注意: 「前日」「翌日」ボタンなどのユーザー操作時のみ呼び出す。
+   * （レンダリング中には呼ばない → React 警告回避のため）
+   */
   onDateChange?: (newDate: string) => void;
 };
 
-// ---- 日付関連ユーティリティ --------------------------------------------------
-
-/**
- * Date を "YYYY-MM-DD" 形式の文字列に変換するヘルパー。
- * - Firestore に保存している date 文字列と同じフォーマットに合わせる。
- */
+/** Date → "YYYY-MM-DD" への変換ユーティリティ */
 function formatDateYYYYMMDD(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -64,110 +55,108 @@ function formatDateYYYYMMDD(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-/**
- * "YYYY-MM-DD" 形式の文字列に日数を加減した新しい日付文字列を返す。
- * - Base を Date にして setDate で日数を加算するシンプルな実装。
- */
+/** "YYYY-MM-DD" の文字列に日数を足し引きするユーティリティ */
 function addDays(base: string, delta: number): string {
   const d = new Date(base);
   d.setDate(d.getDate() + delta);
   return formatDateYYYYMMDD(d);
 }
 
-// ---- メインコンポーネント ----------------------------------------------------
-
 export default function DayView({ initialDate, onDateChange }: DayViewProps) {
-  // ---- 初期日付の決定 --------------------------------------------------------
-
-  // initialDate があればそれを使い、なければ「今日」を初期値とする。
+  // ------------------------------------------------------------
+  // ① 表示中の日付 state
+  //    - initialDate が来なければ「今日」で初期化。
+  // ------------------------------------------------------------
   const todayStr = initialDate ?? formatDateYYYYMMDD(new Date());
-
-  // 現在表示中の日付（前日/翌日ボタンで変わる）
   const [currentDate, setCurrentDate] = useState<string>(todayStr);
 
-  // 現在の日付に紐づく TODO リスト
+  // Firestore から取ってきた「currentDate の TODO 一覧」
   const [todos, setTodos] = useState<Todo[]>([]);
-
-  // Firestore 取得中かどうか
   const [loading, setLoading] = useState(true);
-
-  // 詳細モーダル表示用に、選択中の TODO ID を保持
   const [selectedTodoId, setSelectedTodoId] = useState<string | null>(null);
 
-  // ---- 親から initialDate が変わったときに currentDate を同期する ---------
-
+  // ------------------------------------------------------------
+  // ② 親から initialDate が変わったら currentDate を同期する
+  //    ※ ここでは onDateChange は呼ばない（親の setState をレンダリング中に触らないため）
+  // ------------------------------------------------------------
   useEffect(() => {
-    if (initialDate) {
+    if (initialDate && initialDate !== currentDate) {
       setCurrentDate(initialDate);
     }
-  }, [initialDate]);
+  }, [initialDate, currentDate]);
 
-  // ---- Firestore 購読（currentDate の変更に追従） --------------------------
-
+  // ------------------------------------------------------------
+  // ③ Firestore 購読（currentDate にマッチするものだけフロント側でフィルタ）
+  // ------------------------------------------------------------
   useEffect(() => {
     setLoading(true);
 
-    // createdAt 降順で全 plans を取得し、クライアント側で currentDate だけに絞り込む。
-    // ※ where("date", "==", currentDate) + orderBy を組み合わせる実装もあり得るが、
-    //   現時点ではインデックス要件を増やさないため、クライアントフィルタで実装している。
-    const q = query(collection(db, "plans"), orderBy("createdAt", "desc"));
+    const q = query(
+      collection(db, "plans"),
+      orderBy("createdAt", "desc")
+    );
 
     const unsub = onSnapshot(
       q,
       (snap) => {
-        const arr: Todo[] = snap.docs.map((d) => {
-          const data = d.data() as any;
-          return {
-            id: d.id,
-            title: data.title ?? "",
-            date: data.date ?? null,
-            done: data.done ?? false,
-          };
-        });
+        try {
+          const all: Todo[] = snap.docs.map((d) => {
+            const data = d.data() as any;
+            return {
+              id: d.id,
+              title: data.title ?? "",
+              date: data.date ?? null,
+              done: data.done ?? false,
+            };
+          });
 
-        // 現在の日付だけに絞る
-        const filtered = arr.filter((t) => t.date === currentDate);
-        setTodos(filtered);
-        setLoading(false);
+          // 表示中の日付だけに絞り込む
+          const filtered = all.filter((t) => t.date === currentDate);
+          setTodos(filtered);
+          setLoading(false);
+        } catch (err) {
+          console.error("DayView onSnapshot processing error:", err);
+          setTodos([]);
+          setLoading(false);
+        }
       },
       (err) => {
         console.error("DayView onSnapshot error:", err);
+        setTodos([]);
         setLoading(false);
       }
     );
 
-    // 日付が変わったとき / コンポーネント unmount 時に購読解除
     return () => unsub();
   }, [currentDate]);
 
-  // ---- 日付ナビゲーション（前日 / 翌日） -----------------------------------
-
-  /**
-   * 翌日に移動する。
-   * - currentDate を翌日に更新し、その値を onDateChange で親にも通知する。
-   */
+  // ------------------------------------------------------------
+  // ④ 前日 / 翌日ボタンのハンドラ
+  //    - ここでのみ onDateChange を呼び、親に通知する。
+  // ------------------------------------------------------------
   const goNext = () => {
     setCurrentDate((prev) => {
       const next = addDays(prev, 1);
-      if (onDateChange) onDateChange(next);
+      if (onDateChange) {
+        onDateChange(next); // ← イベントハンドラ内なので安全
+      }
       return next;
     });
   };
 
-  /**
-   * 前日に移動する。
-   * - goNext と同様に currentDate を更新し、親に通知する。
-   */
   const goPrev = () => {
     setCurrentDate((prev) => {
       const next = addDays(prev, -1);
-      if (onDateChange) onDateChange(next);
+      if (onDateChange) {
+        onDateChange(next); // ← 同上
+      }
       return next;
     });
   };
 
-  // ---- レンダリング ---------------------------------------------------------
-
+  // ------------------------------------------------------------
+  // ⑤ レンダリング
+  // ------------------------------------------------------------
   return (
     <section
       style={{
@@ -176,7 +165,7 @@ export default function DayView({ initialDate, onDateChange }: DayViewProps) {
         borderRadius: 8,
       }}
     >
-      {/* 上部ナビ（前日/翌日ボタン + 日付表示） */}
+      {/* 上部ナビゲーション（前日/翌日ボタン + 日付表示） */}
       <div
         style={{
           display: "flex",
@@ -193,17 +182,16 @@ export default function DayView({ initialDate, onDateChange }: DayViewProps) {
         <h4 style={{ margin: 0 }}>{currentDate}</h4>
       </div>
 
-      {/* TODO リスト本体 */}
+      {/* 本体リスト */}
       {loading ? (
         <div>読み込み中…</div>
       ) : (
         <ul style={{ listStyle: "none", padding: 0, marginTop: 8 }}>
-          {/* TODO が1件もない日の表示 */}
           {todos.length === 0 && (
-            <li style={{ color: "#666" }}>この日の TODO はありません</li>
+            <li style={{ color: "#666" }}>
+              この日の TODO はありません
+            </li>
           )}
-
-          {/* 各 TODO 行 */}
           {todos.map((t) => (
             <li
               key={t.id}
@@ -234,7 +222,7 @@ export default function DayView({ initialDate, onDateChange }: DayViewProps) {
         </ul>
       )}
 
-      {/* 詳細モーダル（TodoDetailModal） */}
+      {/* 詳細モーダル */}
       {selectedTodoId && (
         <TodoDetailModal
           todoId={selectedTodoId}
