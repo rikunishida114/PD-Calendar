@@ -1,13 +1,30 @@
 // lib/firebase.ts
-// Firebase(app) を singleton で初期化して、Firestore (db) をエクスポートする。
-// 理由：複数回 initializeApp を呼ぶとエラーになるため、getApps()/getApp() で対処する。
+// Firebase アプリと Firestore インスタンスを初期化し、singleton としてエクスポートするモジュール。
+//
+// 役割:
+// - initializeApp() を「アプリ全体で 1 回だけ」呼び出し、複数初期化エラーを防ぐ。
+// - Firestore 用の db インスタンスを提供し、各コンポーネントから共通利用できるようにする。
+// - 環境変数から Firebase 設定値を読み込む（NEXT_PUBLIC_* はクライアント側バンドルにも含まれることに注意）。
+//
+// 設計方針:
+// - `getApps()` / `getApp()` を用いて singleton パターンを実現。
+//   → Next.js のようにモジュールが複数回評価されうる環境でも安全に動作させるため。
+// - 秘密情報（サービスアカウントキーなど）はここでは扱わず、必要な場合は別途サーバー専用環境変数で管理する。
+// - Firestore は `db` としてエクスポートし、`import { db } from "@/lib/firebase";` という形で利用する。
+//
+// 関連コンポーネント:
+// - plans コレクションへアクセスする全てのコンポーネント
+//   (AddTodoForm, DayView, TodoList, FolderSidebar, FolderTasks, TodoDetailModal など)
+// - taskPatterns コレクションにアクセスする TaskIdeasPanel など。
 
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
 
-// --- ここを .env.local で設定する ---
-// NEXT_PUBLIC_ で始まる環境変数はクライアントバンドルにも含まれます。
-// 秘密情報（サービスアカウントなど）はサーバー側に置くこと。
+// --------------------------------------------------
+// Firebase 設定値 (クライアント側でも必要な情報だけ NEXT_PUBLIC_* で公開)
+// - ここで扱っている値は「プロジェクト識別子」であり、シークレットではない前提。
+// - 実際の秘密鍵や管理用認証情報はサーバー側の別設定に置くべき。
+// --------------------------------------------------
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
   authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
@@ -17,9 +34,19 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
-// 既に初期化済みなら既存の app を使う。未初期化なら initializeApp。
+// --------------------------------------------------
+// Firebase App の singleton 初期化
+// - getApps() が空配列 → まだ初期化されていないので initializeApp()
+// - それ以外 → すでにどこかで初期化済みなので getApp() で再利用
+// - Next.js の開発モードではホットリロードなどでモジュールが複数回評価されるため、
+//   このパターンにしておかないと「Firebase App named '[DEFAULT]' already exists」が発生する。
+// --------------------------------------------------
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 
-// Firestore のインスタンスをエクスポート
+// --------------------------------------------------
+// Firestore インスタンスの作成とエクスポート
+// - 以降、`import { db } from "@/lib/firebase";` で Firestore にアクセスできる。
+// - app 単体が欲しい場合は default export の app を利用。
+// --------------------------------------------------
 export const db = getFirestore(app);
 export default app;

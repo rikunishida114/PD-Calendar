@@ -1,23 +1,40 @@
 // src/app/todo/folder/[id]/page.tsx
+
+/**
+ * FolderPage (動的ルート /todo/folder/[id])
+ *
+ * このファイルの役割
+ * - URL パラメータのフォルダ ID（エンコード済み）を受け取り、
+ *   そのフォルダに紐づく TODO 一覧を表示するページ。
+ * - サーバーコンポーネントとしてフォルダのメタデータ（名前・説明）を Firestore から取得し、
+ *   クライアントコンポーネント FolderTasks に実際の TODO の描画を任せる。
+ *
+ * 設計方針
+ * - params は Next.js App Router 標準の `{ params: { id: string } }` で受け取る。
+ *   Promise を経由させる必要はないため、シンプルな型にリファクタ。
+ * - フォルダメタデータが存在しない場合も、ページ自体はクラッシュさせず
+ *   「名前だけ表示」するフォールバックとする。
+ *
+ * 関連コンポーネント
+ * - FolderTasks（src/app/components/FolderTasks.tsx）
+ *   - 実際の plans コレクションから folder ごとの TODO を購読・表示する。
+ */
+
 import React from "react";
-import { db } from "@/lib/firebase"; // 必要に応じてパスを調整
+import { db } from "@/lib/firebase";
 import { doc, getDoc } from "firebase/firestore";
+import FolderTasks from "../../../components/FolderTasks";
 
-// FolderTasks は client component（src/app/components/FolderTasks.tsx）
-// page.tsx が Server Component のままでも client component を import して使えます。
-import FolderTasks from "../../../components/FolderTasks"; // <-- フォルダ位置に合わせて修正してください
+// Next.js App Router の動的ルート用 props 型
+type FolderPageProps = {
+  params: { id: string };
+};
 
-type Props = { params: Promise<{ id?: string }> | { id?: string } };
+export default async function FolderPage({ params }: FolderPageProps) {
+  const folderId = params?.id;
 
-// Server Component (async) - params を await してから使う
-export default async function FolderPage({ params }: Props) {
-  // params が Promise の場合に備えて await する
-  const resolvedParams = await params;
-  // デバッグ（開発時のみ）
-  console.log("FolderPage called. resolvedParams:", resolvedParams);
-
-  const folderId = resolvedParams?.id;
-  console.log("folderId:", folderId);
+  // 開発時のデバッグログ（本番ではログレベルを落としてもよい）
+  console.log("FolderPage called. params:", params);
 
   if (!folderId) {
     return (
@@ -28,35 +45,62 @@ export default async function FolderPage({ params }: Props) {
     );
   }
 
-  // URL エンコードを戻す
+  // URL エンコードされた ID を元に戻す（フォルダ名そのものを URL に使っている前提）
   const decodedId = decodeURIComponent(folderId);
 
-  // folder metadata を取得（あれば folders コレクションから、なければフォールバックでデフォルト表示）
-  let folderData: any = { name: decodedId, description: "" };
+  // ---- フォルダメタデータの取得 ---------------------------------------------
+
+  // デフォルト（folders コレクションにレコードが無い場合のフォールバック）
+  let folderData: { name: string; description?: string } = {
+    name: decodedId,
+    description: "",
+  };
+
   try {
     if (!db) throw new Error("Firestore `db` is undefined on server");
+
     const folderRef = doc(db, "folders", decodedId);
     const folderSnap = await getDoc(folderRef);
+
     if (folderSnap.exists()) {
-      folderData = folderSnap.data();
+      const data = folderSnap.data() as any;
+      folderData = {
+        name:
+          typeof data.name === "string" && data.name.trim()
+            ? data.name
+            : decodedId,
+        description:
+          typeof data.description === "string" ? data.description : "",
+      };
     } else {
-      // folders コレクションにエントリがない場合は plans 側の集計などのフォールバックを行う
-      // （ここでは簡易に既定値のままにしている）
+      // folders コレクションにエントリがない場合は、plans 側の folder フィールドだけで運用しているケース。
+      // ここでは単に decodedId をフォルダ名として表示する。
       console.warn("Folder not found for id:", decodedId);
     }
   } catch (err) {
     console.error("FolderPage: error fetching folder metadata:", err);
-    // folderData は既定値のままレンダリング（クラッシュ防止）
+    // 失敗しても folderData はデフォルト値のままレンダリング（クラッシュを避ける）
   }
 
+  // ---- ページ描画 -----------------------------------------------------------
+
   return (
-    <section style={{ maxWidth: 1000, margin: "0 auto", padding: 16 }}>
+    <section
+      style={{ maxWidth: 1000, margin: "0 auto", padding: 16 }}
+    >
+      {/* フォルダヘッダ（名前と説明） */}
       <header style={{ marginBottom: 16 }}>
-        <h1 style={{ margin: 0 }}>{folderData?.name ?? "（名前不明）"}</h1>
-        {folderData?.description && <p style={{ marginTop: 4, color: "#666" }}>{folderData.description}</p>}
+        <h1 style={{ margin: 0 }}>
+          {folderData.name || "（名前不明）"}
+        </h1>
+        {folderData.description && (
+          <p style={{ marginTop: 4, color: "#666" }}>
+            {folderData.description}
+          </p>
+        )}
       </header>
 
-      {/* Client component に decodedId を渡して描画 */}
+      {/* TODO 一覧（クライアントコンポーネントに責務を委譲） */}
       <div id="folder-tasks-root">
         <FolderTasks folderId={decodedId} />
       </div>

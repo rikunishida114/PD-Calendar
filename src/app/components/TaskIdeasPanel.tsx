@@ -1,39 +1,56 @@
 // src/app/components/TaskIdeasPanel.tsx
-// 「AIで作成」タブ用パネル
-//
-// 役割：
-//  - ユーザーが「目的（例: 修士論文を3月までに終わらせる）」を入力
-//  - まずは Firestore の taskPatterns コレクションから類似パターンを検索（ローカル学習ベース）
-//     → ここで「目的＋補足」のテキストを使って類似度を計算する
-//  - 見つかればそのタスク群を候補として表示
-//  - 見つからない場合だけ、「クラウドAI（/api/task-ideas）を試しますか？」ボタンを表示
-//  - ユーザーが明示的に許可した場合のみ LLM を呼び出す
-//
-// 就活向け説明：
-//  「ユーザー自身の過去データ（目的＋タスク分解）を優先的に再利用し、
-//    それでも足りない場合だけクラウドAIをオプションとして呼び出すハイブリッド設計」
-//  → コスト最適化＆プライバシー配慮の構成。
-
 "use client";
 
+/**
+ * TaskIdeasPanel.tsx
+ *
+ * このファイルの役割
+ * - 「AIで作成」タブ用のパネル。
+ * - ユーザーが入力した「目的」＋任意の補足から、
+ *   1. まず Firestore の taskPatterns コレクション（ローカル履歴）から類似パターンを検索
+ *   2. よい候補が見つからない場合だけ、サーバー側 API（/api/task-ideas）経由で LLM に問い合わせ
+ * - 生成されたタスク候補を、親の「複数タスクフォーム」に流し込むコールバック onApplyIdeas を提供。
+ *
+ * 設計方針
+ * - 「ローカル履歴を優先、足りないときだけクラウドAI」という二段構えにすることで、
+ *   - コスト最適化（LLM呼び出しを最小限に）
+ *   - プライバシー配慮（まずは自分のデータだけで完結）
+ *   を狙う。
+ * - LLM を呼ぶときは必ずユーザーに明示的に確認（window.confirm）をとる。
+ * - estimatedMin はフォーム系と同様に `number | ""` で統一する。
+ *
+ * 関連コンポーネント / モジュール
+ * - AddTodoForm（複数タスクモード）
+ *   - onApplyIdeas で受けたタスク候補を、subtasks に追加する。
+ * - /api/task-ideas
+ *   - サーバー側で OpenAI などの LLM を呼び出す API エンドポイント。
+ */
+
 import React, { useState } from "react";
-import {
-  collection,
-  getDocs,
-  orderBy,
-  limit,
-  query,
-} from "firebase/firestore";
+import { collection, getDocs, limit, orderBy, query } from "firebase/firestore";
 import { db } from "../../lib/firebase";
 
-// 親フォーム（複数タスク入力フォーム）にタスク案を流し込むための型
-type TaskIdeasPanelProps = {
-  onApplyIdeas?: (
-    tasks: { title: string; date?: string; estimatedMin?: number | "" }[]
-  ) => void;
+// ---- 型定義 -------------------------------------------------------------------
+
+/**
+ * 親の複数タスクフォームに流し込むためのタスク型
+ * - estimatedMin は「フォームと同じく number | ""」に統一しておく。
+ */
+type TaskIdeaForForm = {
+  title: string;
+  date?: string;
+  estimatedMin?: number | "";
 };
 
-// taskPatterns コレクション1件ぶんの最低限の構造
+type TaskIdeasPanelProps = {
+  onApplyIdeas?: (tasks: TaskIdeaForForm[]) => void;
+};
+
+/**
+ * taskPatterns コレクション 1 件ぶんの最低限の構造
+ * - purpose : 目的（例: "修士論文の関連研究をまとめる"）
+ * - tasks   : その目的を分解したタスク配列
+ */
 type TaskPatternDoc = {
   purpose: string;
   tasks: {
@@ -43,8 +60,13 @@ type TaskPatternDoc = {
   }[];
 };
 
-// 文字列を簡易キーワード配列に変換する（日本語もそこそこ動く素朴なやつ）
-// - 句読点や改行をスペースにしてから split
+// ---- 類似度計算用のユーティリティ -------------------------------------------
+
+/**
+ * 文字列を簡易キーワード配列に変換する素朴な関数。
+ * - 日本語でも「句読点をスペースにしてからスペース区切り」でそこそこ動く。
+ * - 本格的な形態素解析はせず、軽量さを優先。
+ */
 function toKeywords(text: string): string[] {
   return text
     .replace(/[、。．,.！？!?\n]/g, " ") // 句読点類をスペースに
@@ -53,8 +75,12 @@ function toKeywords(text: string): string[] {
     .filter((w) => w.length > 0);
 }
 
-// 2つの文字列の「それっぽい類似度」を 0〜1 で返す
-// - Jaccard 係数風: 共通キーワード数 / (A∪B のサイズ)
+/**
+ * 2つの文字列の「それっぽい類似度」を 0〜1 で返す。
+ * - Jaccard 係数風: 共通キーワード数 / (A ∪ B のサイズ)
+ * - 実務ではもっと高度な埋め込み類似度を使うことも多いが、
+ *   ここでは「コストゼロでそこそこ動く」ことを重視している。
+ */
 function similarity(a: string, b: string): number {
   const ak = toKeywords(a);
   const bk = toKeywords(b);
@@ -72,28 +98,38 @@ function similarity(a: string, b: string): number {
   return unionSize === 0 ? 0 : common / unionSize;
 }
 
+// ---- メインコンポーネント ----------------------------------------------------
+
 export default function TaskIdeasPanel({ onApplyIdeas }: TaskIdeasPanelProps) {
+  // ---- 入力欄の状態 ----------------------------------------------------------
+
   // ユーザーが入力する「目的」（例: 修士論文を3月までに終わらせる）
   const [purposeInput, setPurposeInput] = useState("");
+
   // 補足情報（任意） - ローカル類似度計算にも LLM にもヒントとして使う
   const [goalInput, setGoalInput] = useState("");
 
-  // 生成されたタスク候補（ローカル or LLM いずれかの結果）
-  const [suggestedTasks, setSuggestedTasks] = useState<
-    { title: string; date?: string; estimatedMin?: number | "" }[]
-  >([]);
+  // 生成されたタスク候補（ローカル or LLM 結果を共通の形で保持）
+  const [suggestedTasks, setSuggestedTasks] = useState<TaskIdeaForForm[]>([]);
 
-  // 状態系
-  const [loadingLocal, setLoadingLocal] = useState(false);  // ローカル検索中
-  const [loadingLLM, setLoadingLLM] = useState(false);      // LLM 呼び出し中
+  // ---- 状態系（ローディング / メッセージ） ---------------------------------
+
+  const [loadingLocal, setLoadingLocal] = useState(false); // ローカル検索中
+  const [loadingLLM, setLoadingLLM] = useState(false); // LLM 呼び出し中
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [canTryLLM, setCanTryLLM] = useState(false);        // LLM フォールバックを出してよい状態かどうか
 
-  // --------------------------------------------------------
-  // ① ローカル学習（taskPatterns）からの候補生成
-  //    → 目的だけ必須、補足があれば類似度の精度アップに使う
-  // --------------------------------------------------------
+  /**
+   * canTryLLM:
+   * - ローカル履歴から良い候補が得られなかった場合などに、
+   *   「クラウドAIを試してみる」ボタンを出すかどうか。
+   */
+  const [canTryLLM, setCanTryLLM] = useState(false);
+
+  // ========================================================================
+  // ① ローカル履歴（taskPatterns）からの候補生成
+  // ========================================================================
+
   async function handleGenerateFromLocalPatterns() {
     if (!purposeInput.trim()) {
       setErrorMessage("まず目的を入力してください。");
@@ -103,19 +139,24 @@ export default function TaskIdeasPanel({ onApplyIdeas }: TaskIdeasPanelProps) {
     setLoadingLocal(true);
     setLoadingLLM(false);
     setErrorMessage(null);
-    setInfoMessage("これまでのタスク分解の履歴から、似た目的のパターンを探しています...");
+    setInfoMessage(
+      "これまでのタスク分解の履歴から、似た目的のパターンを探しています..."
+    );
     setCanTryLLM(false); // 一度リセット
 
     try {
-      // 0. 類似度計算に使う「ユーザー側テキスト」
-      //    - 目的 + 補足を単純に連結 → 補足を書いたときはキーワードが増えてマッチしやすくなる
+      // --- 類似度計算に使うユーザーテキストを作る ------------------------
+
+      // 目的 + 補足を単純に連結 → 補足を書いたときはキーワードが増えてマッチしやすくなる
       const userText =
         goalInput.trim().length > 0
           ? `${purposeInput} ${goalInput}`
           : purposeInput;
 
-      // 1. 最近の taskPatterns を取得（createdAt 降順に最大50件）
+      // --- 最近の taskPatterns を Firestore から取得 ----------------------
+
       const patternsRef = collection(db, "taskPatterns");
+      // createdAt 降順で最大 50 件。まずは「最近よく使っている目的」を優先したいという意図。
       const q = query(patternsRef, orderBy("createdAt", "desc"), limit(50));
       const snap = await getDocs(q);
 
@@ -139,47 +180,45 @@ export default function TaskIdeasPanel({ onApplyIdeas }: TaskIdeasPanelProps) {
         });
       });
 
+      // ローカルの履歴が 1 件もない場合
       if (patterns.length === 0) {
-        // まだ学習データがない場合
         setSuggestedTasks([]);
         setInfoMessage(
           "まだタスク分解の履歴がありません。複数タスク機能でいくつか目的＋タスク群を登録すると、ここに候補が表示されるようになります。"
         );
-        // LLM を試すオプションを出してもよい（任意）
-        setCanTryLLM(true);
+        setCanTryLLM(true); // LLM をオプションとして出しておく
         return;
       }
 
-      // 2. 類似度を計算してスコア順にソート
+      // --- 目的テキストとの類似度を計算してソート -------------------------
+
       const scored = patterns
         .map((p) => ({
           pattern: p,
-          // ★ ここで userText（目的＋補足）を使って類似度を評価
+          // ここで userText（目的＋補足）を使って類似度を評価
           score: similarity(userText, p.purpose),
         }))
         .sort((a, b) => b.score - a.score);
 
       const best = scored[0];
 
-      // 3. 類似度が低すぎる場合は「ローカルからは見つからない」とする
+      // 類似度が低すぎる場合は「ローカルからは見つからない」とする。
+      // 0.1 は経験的な閾値で、必要に応じて調整可能。
       if (!best || best.score < 0.1) {
         setSuggestedTasks([]);
         setInfoMessage(
           "近い目的のパターンはローカル履歴から見つかりませんでした。必要であれば、下のボタンからクラウドAIに相談することもできます。"
         );
-        // ここで LLM ボタンを有効化
         setCanTryLLM(true);
         return;
       }
 
-      // 4. 最も類似度の高いパターンの tasks を候補として採用
-      const mappedTasks: {
-        title: string;
-        date?: string;
-        estimatedMin?: number | "";
-      }[] = best.pattern.tasks.map((t) => {
+      // --- 最も類似度の高いパターンの tasks を候補として採用 -------------
+
+      const mappedTasks: TaskIdeaForForm[] = best.pattern.tasks.map((t) => {
         let est: number | "" = "";
         if (typeof t.estimatedMin === "number") {
+          // ★ ここでフォーム仕様に合わせて number | "" へ変換
           est = t.estimatedMin;
         }
         return {
@@ -202,24 +241,24 @@ export default function TaskIdeasPanel({ onApplyIdeas }: TaskIdeasPanelProps) {
         "過去のパターンの読み込みに失敗しました。ネットワークまたは Firestore の設定を確認してください。"
       );
       setSuggestedTasks([]);
-      setCanTryLLM(true); // ローカルが壊れている場合も、LLM オプションを出しておく
+      setCanTryLLM(true); // ローカルが壊れている場合も LLM オプションを出す
     } finally {
       setLoadingLocal(false);
     }
   }
 
-  // --------------------------------------------------------
-  // ② LLM フォールバック（/api/task-ideas）を使う処理
-  //    ※ 実行前に confirm でユーザーに本当に使うかを確認する
-  //    ※ 目的だけでも呼べる。補足を書けば LLM 側の精度が上がる。
-  // --------------------------------------------------------
+  // ========================================================================
+  // ② LLM フォールバック（/api/task-ideas）呼び出し
+  // ========================================================================
+
   async function handleGenerateFromLLM() {
     if (!purposeInput.trim()) {
       setErrorMessage("まず目的を入力してください。");
       return;
     }
 
-    // ユーザーに確認（料金が発生する可能性を明示）
+    // --- ユーザーへの確認ダイアログ ---------------------------------------
+
     const ok = window.confirm(
       "クラウド上のAIサービスに、入力した目的や補足情報を送信してタスク候補を生成します。\n" +
         "ご利用のAPIプランによっては料金が発生する場合があります。\n\n" +
@@ -232,7 +271,7 @@ export default function TaskIdeasPanel({ onApplyIdeas }: TaskIdeasPanelProps) {
     setInfoMessage("クラウドAIにタスク分解を依頼しています...");
 
     try {
-      // /api/task-ideas は、サーバー側で OpenAI などの LLM を呼び出すエンドポイント
+      // /api/task-ideas はサーバー側で OpenAI などの LLM を呼び出すエンドポイント
       const res = await fetch("/api/task-ideas", {
         method: "POST",
         headers: {
@@ -256,18 +295,15 @@ export default function TaskIdeasPanel({ onApplyIdeas }: TaskIdeasPanelProps) {
 
       const data = await res.json();
 
-      // ★ ここが「フロント側を合わせる」ポイント
-      //   - route.ts が { tasks: [...] } を返す場合と
-      //   - { suggestions: [...] } を返す場合の両方に対応しておく
-      const raw =
-        Array.isArray(data.tasks)
-          ? data.tasks
-          : Array.isArray(data.suggestions)
-          ? data.suggestions
-          : [];
+      // route.ts 側の実装差異に対応するため、tasks / suggestions の両方を許容
+      const raw = Array.isArray(data.tasks)
+        ? data.tasks
+        : Array.isArray(data.suggestions)
+        ? data.suggestions
+        : [];
 
       // title があるものだけを拾って UI 用の形に整形
-      const mappedTasks = raw
+      const mappedTasks: TaskIdeaForForm[] = raw
         .filter(
           (t: any) =>
             t &&
@@ -277,18 +313,19 @@ export default function TaskIdeasPanel({ onApplyIdeas }: TaskIdeasPanelProps) {
         .map((t: any) => {
           let est: number | "" = "";
           if (typeof t.estimatedMin === "number") {
+            // ここでもフォーム用に number | "" へ変換
             est = t.estimatedMin;
           }
           return {
             title: t.title.trim(),
-            // LLM には日付・分数まで決めさせず、ユーザーが後から調整しやすいように空のままにする
+            // 日付・分数まで LLM に決めさせない設計だが、
+            // route.ts 側で date や estimatedMin が追加されても一応拾えるようにしておく。
             date: t.date ?? "",
             estimatedMin: est,
           };
         });
 
       if (mappedTasks.length === 0) {
-        // ★ ここで、あなたが見ていたメッセージが表示される
         setInfoMessage(
           "クラウドAIから有効なタスク候補が返ってきませんでした。目的文を少し具体的にして、再度お試しください。"
         );
@@ -308,11 +345,13 @@ export default function TaskIdeasPanel({ onApplyIdeas }: TaskIdeasPanelProps) {
     }
   }
 
-  // --------------------------------------------------------
-  // ③ 親フォーム（複数タスクフォーム）にタスク案を反映
-  // --------------------------------------------------------
+  // ========================================================================
+  // ③ 親フォーム（複数タスクフォーム）への適用処理
+  // ========================================================================
+
   function handleApplyToMultiForm() {
     if (!onApplyIdeas) {
+      // 親が渡していない場合は、壊さないようにログだけ出す
       console.log(
         "[TaskIdeasPanel] onApplyIdeas が指定されていないため、タスク案の適用は行わずログのみ出力します。",
         suggestedTasks
@@ -326,9 +365,10 @@ export default function TaskIdeasPanel({ onApplyIdeas }: TaskIdeasPanelProps) {
     onApplyIdeas(suggestedTasks);
   }
 
-  // --------------------------------------------------------
-  // JSX（UI部分）
-  // --------------------------------------------------------
+  // ========================================================================
+  // JSX（UI）
+  // ========================================================================
+
   return (
     <div
       style={{
@@ -339,7 +379,9 @@ export default function TaskIdeasPanel({ onApplyIdeas }: TaskIdeasPanelProps) {
       }}
     >
       {/* タイトル：就活で説明しやすい文言 */}
-      <h3 style={{ marginTop: 0 }}>タスク分解アシスタント（ローカル優先＋AIオプション）</h3>
+      <h3 style={{ marginTop: 0 }}>
+        タスク分解アシスタント（ローカル優先＋AIオプション）
+      </h3>
       <p style={{ fontSize: 13, color: "#555" }}>
         これまでに登録した「目的＋複数タスク」の履歴をもとに、似ている目的のタスク候補を自動で提案します。
         まずはローカルの履歴だけを使い、足りない場合にだけクラウド上のAIサービスを任意で利用できる構成です。
@@ -347,7 +389,9 @@ export default function TaskIdeasPanel({ onApplyIdeas }: TaskIdeasPanelProps) {
 
       {/* 目的入力欄（必須） */}
       <label style={{ display: "block", marginTop: 8 }}>
-        <div style={{ fontSize: 13 }}>目的（例: 修士論文を3月までに終わらせる）</div>
+        <div style={{ fontSize: 13 }}>
+          目的（例: 修士論文を3月までに終わらせる）
+        </div>
         <input
           value={purposeInput}
           onChange={(e) => setPurposeInput(e.target.value)}
@@ -380,9 +424,16 @@ export default function TaskIdeasPanel({ onApplyIdeas }: TaskIdeasPanelProps) {
         />
       </label>
 
-      {/* ボタン群 */}
-      <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center" }}>
-        {/* ローカル学習からの提案ボタン */}
+      {/* ボタン群（ローカル検索 / LLM フォールバック / フォームに反映） */}
+      <div
+        style={{
+          marginTop: 10,
+          display: "flex",
+          gap: 8,
+          alignItems: "center",
+        }}
+      >
+        {/* ローカル履歴からの提案 */}
         <button
           type="button"
           onClick={handleGenerateFromLocalPatterns}
@@ -435,7 +486,7 @@ export default function TaskIdeasPanel({ onApplyIdeas }: TaskIdeasPanelProps) {
         </button>
       </div>
 
-      {/* メッセージ */}
+      {/* メッセージ表示 */}
       {infoMessage && (
         <div style={{ marginTop: 8, fontSize: 12, color: "#4b5563" }}>
           {infoMessage}
@@ -467,11 +518,20 @@ export default function TaskIdeasPanel({ onApplyIdeas }: TaskIdeasPanelProps) {
                 }}
               >
                 <div style={{ fontWeight: 600 }}>{t.title}</div>
-                <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>
-                  {t.date && <span style={{ marginRight: 8 }}>📅 {t.date}</span>}
-                  {t.estimatedMin !== "" && t.estimatedMin != null && (
-                    <span>⏱ {t.estimatedMin} 分</span>
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: "#666",
+                    marginTop: 4,
+                  }}
+                >
+                  {t.date && (
+                    <span style={{ marginRight: 8 }}>📅 {t.date}</span>
                   )}
+                  {t.estimatedMin !== "" &&
+                    t.estimatedMin != null && (
+                      <span>⏱ {t.estimatedMin} 分</span>
+                    )}
                 </div>
               </li>
             ))}

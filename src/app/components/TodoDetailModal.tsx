@@ -1,25 +1,76 @@
 // src/app/components/TodoDetailModal.tsx
-// 詳細モーダル：タイトル・説明・日付・フォルダ・想定分数・完了を編集
-// period は使わないように変更済み
-
 "use client";
+
+/**
+ * TodoDetailModal.tsx
+ *
+ * このファイルの役割
+ * - 1件の TODO（plans コレクションのドキュメント）を詳細表示・編集するモーダル。
+ * - 編集項目:
+ *   - タイトル
+ *   - 説明
+ *   - 日付 (YYYY-MM-DD)
+ *   - フォルダ名
+ *   - 想定分数（estimatedMin）
+ *   - 完了フラグ（done）
+ * - 変更内容を Firestore に updateDoc で保存する。
+ *
+ * 設計方針
+ * - モーダル自体は「1件の Todo の CRUD UI」のうち、「読み込み + 更新」に責務を限定。
+ *   - 削除など他の操作が必要な場合は、別ボタン/別コンポーネントで拡張可能な構造にしておく。
+ * - フォーム入力で扱う estimatedMin は `number | ""` に統一。
+ *   - Firestore には `number | null` として保存し、空文字は null に変換してから送る。
+ *
+ * 関連コンポーネント / モジュール
+ * - DayView / FolderTasks など
+ *   - それぞれの一覧画面からこのモーダルを呼び出す。
+ * - Firestore plans コレクション
+ */
 
 import React, { useEffect, useState } from "react";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
+// ---- 型定義 -------------------------------------------------------------------
+
+/**
+ * モーダル内で扱う Todo データの型
+ * - Firestore の plans ドキュメントをそのまま any で使うと見通しが悪いので、
+ *   UI で編集するフィールドを明示した型を定義しておく。
+ */
+type TodoDetailData = {
+  title: string;
+  description: string;
+  date: string; // "YYYY-MM-DD" or ""
+  folder: string;
+  estimatedMin: number | ""; // フォーム内は number | "" に統一
+  done: boolean;
+};
+
+// ---- Props -------------------------------------------------------------------
+
+type TodoDetailModalProps = {
+  todoId: string;
+  onClose: () => void;
+};
+
+// ---- コンポーネント本体 ------------------------------------------------------
+
 export default function TodoDetailModal({
   todoId,
   onClose,
-}: {
-  todoId: string;
-  onClose: () => void;
-}) {
-  const [data, setData] = useState<any>(null);
+}: TodoDetailModalProps) {
+  // Firestore から読み込んだ Todo データ（UI 用に整形済み）
+  const [data, setData] = useState<TodoDetailData | null>(null);
+
+  // 読み込み中・保存中状態
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  // Firestore から 1 件読み込む
+  // ========================================================================
+  // ① Firestore から対象 Todo を 1 件読み込む
+  // ========================================================================
+
   useEffect(() => {
     if (!todoId) return;
 
@@ -29,13 +80,23 @@ export default function TodoDetailModal({
         const snap = await getDoc(doc(db, "plans", todoId));
         if (snap.exists()) {
           const d = snap.data() as any;
-          setData({
-            ...d,
-            // estimatedMin は数値以外なら空文字にしておく（input 用）
+
+          // Firestore 上は undefined や null もあり得るので、
+          // UI の型 TodoDetailData に合うように補正してから setData する。
+          const normalized: TodoDetailData = {
+            title: typeof d.title === "string" ? d.title : "",
+            description:
+              typeof d.description === "string" ? d.description : "",
+            date: typeof d.date === "string" ? d.date : "",
+            folder: typeof d.folder === "string" ? d.folder : "",
             estimatedMin:
               typeof d.estimatedMin === "number" ? d.estimatedMin : "",
-          });
+            done: !!d.done,
+          };
+
+          setData(normalized);
         } else {
+          // ドキュメントが存在しない場合
           setData(null);
         }
       } catch (e) {
@@ -47,21 +108,39 @@ export default function TodoDetailModal({
     })();
   }, [todoId]);
 
-  if (loading)
+  // 読み込み中表示
+  if (loading) {
     return <div style={{ padding: 20 }}>読み込み中...</div>;
-  if (!data)
+  }
+
+  // データが存在しなかった場合
+  if (!data) {
     return (
       <div style={{ padding: 20 }}>
         データが見つかりませんでした。
       </div>
     );
+  }
 
-  // 共通フィールド更新（title, description, date, folder, done など）
-  const setField = (k: string, v: any) =>
-    setData((d: any) => ({ ...d, [k]: v }));
+  // ========================================================================
+  // ② フィールド更新用ヘルパー
+  // ========================================================================
 
-  // 保存処理
+  /**
+   * 汎用的なフィールド更新関数
+   * - k: TodoDetailData のキー
+   * - v: 新しい値
+   */
+  const setField = <K extends keyof TodoDetailData>(k: K, v: TodoDetailData[K]) =>
+    setData((prev) => (prev ? { ...prev, [k]: v } : prev));
+
+  // ========================================================================
+  // ③ 保存処理（Firestore update）
+  // ========================================================================
+
   const handleSave = async () => {
+    if (!data) return;
+
     try {
       setSaving(true);
 
@@ -77,15 +156,16 @@ export default function TodoDetailModal({
         estimatedValue = n;
       }
 
+      // Firestore に書き込むデータ
       await updateDoc(doc(db, "plans", todoId), {
         // undefined は Firestore が嫌うので、空文字や null に寄せる
         title: data.title ?? "",
         description: data.description ?? "",
-        date: data.date ?? "", // "YYYY-MM-DD" で扱う
+        date: data.date ?? "", // "YYYY-MM-DD" 文字列 or ""
         folder: data.folder ?? "",
-        estimatedMin: estimatedValue, // null または number
+        estimatedMin: estimatedValue, // number | null
         done: !!data.done,
-        // period はもう使わないので書き込まない
+        // period はもう使わないので書き込まない（過去のフィールドが残っていても更新しない）
       });
 
       onClose();
@@ -99,8 +179,12 @@ export default function TodoDetailModal({
     }
   };
 
+  // ========================================================================
+  // ④ JSX（モーダル表示）
+  // ========================================================================
+
   return (
-    // 背景クリックで閉じる
+    // 背景（グレー）クリックで閉じる
     <div
       style={{
         position: "fixed",
@@ -110,6 +194,7 @@ export default function TodoDetailModal({
       }}
       onClick={onClose}
     >
+      {/* モーダル本体（クリックバブルを止めて背景クリックと区別） */}
       <div
         style={{
           width: 560,
@@ -120,25 +205,26 @@ export default function TodoDetailModal({
         }}
         onClick={(e) => e.stopPropagation()}
       >
+        {/* ヘッダー（タイトルプレビュー） */}
         <h3 style={{ marginTop: 0 }}>
           {data.title || "（タイトルなし）"}
         </h3>
 
-        {/* タイトル */}
+        {/* タイトル入力 */}
         <label style={{ display: "block", marginTop: 8 }}>
           タイトル
           <input
-            value={data.title || ""}
+            value={data.title}
             onChange={(e) => setField("title", e.target.value)}
             style={{ width: "100%", marginTop: 4 }}
           />
         </label>
 
-        {/* 説明 */}
+        {/* 説明入力 */}
         <label style={{ display: "block", marginTop: 8 }}>
           説明
           <textarea
-            value={data.description || ""}
+            value={data.description}
             onChange={(e) =>
               setField("description", e.target.value)
             }
@@ -151,7 +237,7 @@ export default function TodoDetailModal({
           日付
           <input
             type="date"
-            value={data.date || ""}
+            value={data.date}
             onChange={(e) => setField("date", e.target.value)}
             style={{ marginTop: 4 }}
           />
@@ -161,7 +247,7 @@ export default function TodoDetailModal({
         <label style={{ display: "block", marginTop: 8 }}>
           フォルダ
           <input
-            value={data.folder || ""}
+            value={data.folder}
             onChange={(e) => setField("folder", e.target.value)}
             style={{ width: "100%", marginTop: 4 }}
             placeholder="例：論文紹介 / 修士論文 など"
@@ -176,13 +262,12 @@ export default function TodoDetailModal({
             min={0}
             value={data.estimatedMin ?? ""}
             onChange={(e) =>
-              setData((d: any) => ({
-                ...d,
-                estimatedMin:
-                  e.target.value === ""
-                    ? ""
-                    : Number(e.target.value),
-              }))
+              setField(
+                "estimatedMin",
+                e.target.value === ""
+                  ? ""
+                  : Number(e.target.value)
+              )
             }
             style={{ marginTop: 4, width: 120 }}
           />
@@ -199,12 +284,13 @@ export default function TodoDetailModal({
         >
           <input
             type="checkbox"
-            checked={!!data.done}
+            checked={data.done}
             onChange={(e) => setField("done", e.target.checked)}
           />
           <span>完了したタスクとして扱う</span>
         </label>
 
+        {/* フッター（ボタン群） */}
         <div
           style={{
             marginTop: 12,

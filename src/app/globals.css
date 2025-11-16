@@ -1,26 +1,62 @@
-@import "tailwindcss";
+/* src/app/globals.css
+ * アプリ全体のベーススタイルとテーマ設定を行うグローバル CSS。
+ *
+ * 設計方針:
+ * - レイアウトや余白などの「コンポーネント固有の見た目」はできるだけ各コンポーネント側に寄せる。
+ * - ここでは「色・フォント・背景」などのアプリ共通のトーンだけを定義する。
+ * - Tailwind v4 (@import "tailwindcss") を利用しつつ、CSS カスタムプロパティでライト/ダークのテーマ切替を行う。
+ *
+ * 関連コンポーネント:
+ * - すべての app 配下のページ・コンポーネントがこのスタイルの影響を受ける。
+ * - TopNav / TodoPage / CalendarPage などもここで定義した色やフォントを前提としている。
+ */
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+ @import "tailwindcss";
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
-}
+ /* --------------------------------------------------
+  * テーマ用の CSS カスタムプロパティ（ライトテーマのデフォルト値）
+  * - :root に置くことで全コンポーネントから参照可能にする。
+  * - `--background` / `--foreground` は後続の @theme, body などで利用。
+  * -------------------------------------------------- */
+ :root {
+   --background: #ffffff;
+   --foreground: #171717;
+ }
+ 
+ /* --------------------------------------------------
+  * Tailwind v4 の @theme inline によるテーマ変数マッピング
+  * - Tailwind ユーティリティクラスからもカスタムプロパティを使えるようにする。
+  * - フォントについては app/layout.tsx 側で設定している
+  *   Geist フォントを前提に var(--font-geist-*) を参照。
+  * -------------------------------------------------- */
+ @theme inline {
+   --color-background: var(--background);
+   --color-foreground: var(--foreground);
+   --font-sans: var(--font-geist-sans);
+   --font-mono: var(--font-geist-mono);
+ }
+ 
+ /* --------------------------------------------------
+  * ダークモード対応
+  * - OS やブラウザの「ダークテーマ」の設定に合わせて色を切り替える。
+  * - ここではシンプルに背景と前景色だけを反転させる。
+  *   詳細な配色は必要に応じてコンポーネント側で上書き可能。
+  * -------------------------------------------------- */
+ @media (prefers-color-scheme: dark) {
+   :root {
+     --background: #0a0a0a;
+     --foreground: #ededed;
+   }
+ }
+ 
+ /* --------------------------------------------------
+  * body のベーススタイル
+  * - アプリ全体の背景色と文字色、デフォルトフォントを指定。
+  * - コンポーネント側でフォントを変えたい場合は個別に指定すれば OK。
+  * -------------------------------------------------- */
+ body {
+   background: var(--background);
+   color: var(--foreground);
+   font-family: Arial, Helvetica, sans-serif;
+ }
+ 
