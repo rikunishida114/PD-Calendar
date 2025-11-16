@@ -1,0 +1,12 @@
+specVersion: "v1beta"
+serviceId: "pd-calendar"
+location: "us-central1"
+schema:
+  source: "./schema"
+  datasource:
+    postgresql:
+      database: "fdcdb"
+      cloudSql:
+        instanceId: "pd-calendar-fdc"
+      # schemaValidation: "COMPATIBLE"
+connectorDirs: ["./connector"]
